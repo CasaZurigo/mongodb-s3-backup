@@ -5,10 +5,12 @@ import {
   DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
 import { CronJob } from "cron";
-import { spawn } from "child_process";
-import { createReadStream, unlinkSync } from "fs";
+import { MongoClient } from "mongodb";
+import { createReadStream, createWriteStream, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { createGzip } from "zlib";
+import { Readable } from "stream";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -119,30 +121,69 @@ async function createMongoDBBackup(): Promise<void> {
 
   console.log(`Starting MongoDB backup: ${backupFileName}`);
 
+  const client = new MongoClient(MONGODB_URI!);
+
   try {
+    await client.connect();
+    console.log("Connected to MongoDB");
+
+    const backup: any = {
+      databases: {},
+      timestamp: new Date().toISOString()
+    };
+
+    // Check if a specific database is specified in the URI
+    const url = new URL(MONGODB_URI!);
+    const specificDatabase = url.pathname.slice(1); // Remove leading slash
+    
+    let databasesToBackup: string[] = [];
+    
+    if (specificDatabase && specificDatabase !== '') {
+      // If specific database is in URI, only backup that one
+      console.log(`URI specifies database: ${specificDatabase}`);
+      databasesToBackup = [specificDatabase];
+    } else {
+      // Otherwise, backup all user databases
+      const admin = client.db().admin();
+      const databases = await admin.listDatabases();
+      databasesToBackup = databases.databases
+        .filter(dbInfo => !['admin', 'local', 'config'].includes(dbInfo.name))
+        .map(dbInfo => dbInfo.name);
+    }
+
+    for (const dbName of databasesToBackup) {
+      console.log(`Backing up database: ${dbName}`);
+      const db = client.db(dbName);
+      const collections = await db.listCollections().toArray();
+      
+      backup.databases[dbName] = {
+        collections: {}
+      };
+
+      for (const collInfo of collections) {
+        console.log(`  Backing up collection: ${collInfo.name}`);
+        const collection = db.collection(collInfo.name);
+        const documents = await collection.find({}).toArray();
+        backup.databases[dbName].collections[collInfo.name] = {
+          documents,
+          indexes: await collection.listIndexes().toArray()
+        };
+      }
+    }
+
+    const backupJson = JSON.stringify(backup, null, 2);
+    const writeStream = createWriteStream(tempFilePath);
+    const gzipStream = createGzip();
+    
+    const readable = Readable.from([backupJson]);
+    readable.pipe(gzipStream).pipe(writeStream);
+    
     await new Promise<void>((resolve, reject) => {
-      const mongodump = spawn("mongodump", [
-        "--uri",
-        MONGODB_URI!,
-        "--archive",
-        "--gzip",
-      ]);
-
-      const gzipStream = require("fs").createWriteStream(tempFilePath);
-
-      mongodump.stdout.pipe(gzipStream);
-
-      mongodump.on("error", reject);
-      mongodump.on("close", (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error(`mongodump exited with code ${code}`));
-        }
-      });
+      writeStream.on('finish', resolve);
+      writeStream.on('error', reject);
     });
 
-    console.log("MongoDB dump completed, uploading to S3...");
+    console.log("MongoDB backup completed, uploading to S3...");
 
     const fileStream = createReadStream(tempFilePath);
     const s3Key = S3_KEY_PATH
@@ -173,6 +214,9 @@ async function createMongoDBBackup(): Promise<void> {
     }
 
     throw error;
+  } finally {
+    await client.close();
+    console.log("MongoDB connection closed");
   }
 }
 
