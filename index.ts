@@ -1,12 +1,12 @@
 import {
   S3Client,
-  PutObjectCommand,
   ListObjectsV2Command,
   DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
+import { Upload } from "@aws-sdk/lib-storage";
 import { CronJob } from "cron";
 import { MongoClient } from "mongodb";
-import { createReadStream, createWriteStream, unlinkSync } from "fs";
+import { createReadStream, createWriteStream, unlinkSync, statSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { createGzip } from "zlib";
@@ -129,16 +129,16 @@ async function createMongoDBBackup(): Promise<void> {
 
     const backup: any = {
       databases: {},
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     };
 
     // Check if a specific database is specified in the URI
     const url = new URL(MONGODB_URI!);
     const specificDatabase = url.pathname.slice(1); // Remove leading slash
-    
+
     let databasesToBackup: string[] = [];
-    
-    if (specificDatabase && specificDatabase !== '') {
+
+    if (specificDatabase && specificDatabase !== "") {
       // If specific database is in URI, only backup that one
       console.log(`URI specifies database: ${specificDatabase}`);
       databasesToBackup = [specificDatabase];
@@ -147,17 +147,17 @@ async function createMongoDBBackup(): Promise<void> {
       const admin = client.db().admin();
       const databases = await admin.listDatabases();
       databasesToBackup = databases.databases
-        .filter(dbInfo => !['admin', 'local', 'config'].includes(dbInfo.name))
-        .map(dbInfo => dbInfo.name);
+        .filter((dbInfo) => !["admin", "local", "config"].includes(dbInfo.name))
+        .map((dbInfo) => dbInfo.name);
     }
 
     for (const dbName of databasesToBackup) {
       console.log(`Backing up database: ${dbName}`);
       const db = client.db(dbName);
       const collections = await db.listCollections().toArray();
-      
+
       backup.databases[dbName] = {
-        collections: {}
+        collections: {},
       };
 
       for (const collInfo of collections) {
@@ -166,7 +166,7 @@ async function createMongoDBBackup(): Promise<void> {
         const documents = await collection.find({}).toArray();
         backup.databases[dbName].collections[collInfo.name] = {
           documents,
-          indexes: await collection.listIndexes().toArray()
+          indexes: await collection.listIndexes().toArray(),
         };
       }
     }
@@ -174,13 +174,13 @@ async function createMongoDBBackup(): Promise<void> {
     const backupJson = JSON.stringify(backup, null, 2);
     const writeStream = createWriteStream(tempFilePath);
     const gzipStream = createGzip();
-    
+
     const readable = Readable.from([backupJson]);
     readable.pipe(gzipStream).pipe(writeStream);
-    
+
     await new Promise<void>((resolve, reject) => {
-      writeStream.on('finish', resolve);
-      writeStream.on('error', reject);
+      writeStream.on("finish", resolve);
+      writeStream.on("error", reject);
     });
 
     console.log("MongoDB backup completed, uploading to S3...");
@@ -190,13 +190,16 @@ async function createMongoDBBackup(): Promise<void> {
       ? `${S3_KEY_PATH}/${backupFileName}`
       : backupFileName;
 
-    const uploadCommand = new PutObjectCommand({
-      Bucket: S3_BUCKET,
-      Key: s3Key,
-      Body: fileStream,
+    const upload = new Upload({
+      client: s3Client,
+      params: {
+        Bucket: S3_BUCKET,
+        Key: s3Key,
+        Body: fileStream,
+      },
     });
 
-    await s3Client.send(uploadCommand);
+    await upload.done();
 
     console.log(`Backup uploaded successfully to S3: ${s3Key}`);
 
