@@ -26,7 +26,6 @@ const {
 } = process.env;
 
 if (
-  !S3_ENDPOINT ||
   !S3_REGION ||
   !S3_ACCESS_KEY_ID ||
   !S3_SECRET_ACCESS_KEY ||
