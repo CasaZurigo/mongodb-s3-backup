@@ -1,4 +1,9 @@
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  PutObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectCommand,
+} from "@aws-sdk/client-s3";
 import { CronJob } from "cron";
 import { spawn } from "child_process";
 import { createReadStream, unlinkSync } from "fs";
@@ -17,6 +22,7 @@ const {
   S3_KEY_PATH,
   CRON_SCHEDULE,
   MONGODB_URI,
+  RETENTION_DAYS,
 } = process.env;
 
 if (
@@ -40,6 +46,72 @@ const s3Client = new S3Client({
   },
   forcePathStyle: true,
 });
+
+async function deleteOldBackups(): Promise<void> {
+  if (!RETENTION_DAYS) {
+    console.log("No retention period set, skipping cleanup");
+    return;
+  }
+
+  const retentionDays = parseInt(RETENTION_DAYS, 10);
+  if (isNaN(retentionDays) || retentionDays <= 0) {
+    console.log("Invalid retention period, skipping cleanup");
+    return;
+  }
+
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+
+  console.log(
+    `Cleaning up backups older than ${retentionDays} days (before ${cutoffDate.toISOString()})`
+  );
+
+  try {
+    const listCommand = new ListObjectsV2Command({
+      Bucket: S3_BUCKET,
+      Prefix: S3_KEY_PATH
+        ? `${S3_KEY_PATH}/mongodb-backup-`
+        : "mongodb-backup-",
+    });
+
+    const response = await s3Client.send(listCommand);
+
+    if (!response.Contents) {
+      console.log("No backups found");
+      return;
+    }
+
+    const objectsToDelete = response.Contents.filter((obj) => {
+      if (!obj.LastModified) return false;
+      return obj.LastModified < cutoffDate;
+    });
+
+    if (objectsToDelete.length === 0) {
+      console.log("No old backups to delete");
+      return;
+    }
+
+    console.log(`Found ${objectsToDelete.length} old backup(s) to delete`);
+
+    for (const obj of objectsToDelete) {
+      if (obj.Key) {
+        const deleteCommand = new DeleteObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: obj.Key,
+        });
+
+        await s3Client.send(deleteCommand);
+        console.log(`Deleted old backup: ${obj.Key}`);
+      }
+    }
+
+    console.log(
+      `Cleanup completed: ${objectsToDelete.length} old backup(s) deleted`
+    );
+  } catch (error) {
+    console.error("Failed to cleanup old backups:", error);
+  }
+}
 
 async function createMongoDBBackup(): Promise<void> {
   const timestamp = new Date().toISOString().split("T")[0]!.replace(/-/g, "");
@@ -90,6 +162,8 @@ async function createMongoDBBackup(): Promise<void> {
 
     unlinkSync(tempFilePath);
     console.log("Temporary file cleaned up");
+
+    await deleteOldBackups();
   } catch (error) {
     console.error("Backup failed:", error);
 
