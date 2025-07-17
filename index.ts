@@ -229,5 +229,10 @@ if (CRON_SCHEDULE) {
   console.log("Cron job started");
 } else {
   console.log("No cron schedule specified, running backup once...");
-  createMongoDBBackup().catch(console.error);
+  try {
+    await createMongoDBBackup();
+  } catch (error) {
+    console.error("Error during initial backup:", error);
+  }
+  process.exit(0);
 }
