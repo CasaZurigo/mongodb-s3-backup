@@ -6,7 +6,8 @@ import {
 import { Upload } from "@aws-sdk/lib-storage";
 import { CronJob } from "cron";
 import { MongoClient } from "mongodb";
-import { createReadStream, createWriteStream, unlinkSync, statSync } from "fs";
+import { EJSON } from "bson";
+import { createReadStream, createWriteStream, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { createGzip } from "zlib";
@@ -171,7 +172,7 @@ async function createMongoDBBackup(): Promise<void> {
       }
     }
 
-    const backupJson = JSON.stringify(backup, null, 2);
+    const backupJson = EJSON.stringify(backup, undefined, 2);
     const writeStream = createWriteStream(tempFilePath);
     const gzipStream = createGzip();
 
