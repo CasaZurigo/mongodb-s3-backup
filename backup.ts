@@ -128,11 +128,6 @@ async function createMongoDBBackup(): Promise<void> {
     await client.connect();
     console.log("Connected to MongoDB");
 
-    const backup: any = {
-      databases: {},
-      timestamp: new Date().toISOString(),
-    };
-
     // Check if a specific database is specified in the URI
     const url = new URL(MONGODB_URI!);
     const specificDatabase = url.pathname.slice(1); // Remove leading slash
@@ -151,6 +146,11 @@ async function createMongoDBBackup(): Promise<void> {
         .filter((dbInfo) => !["admin", "local", "config"].includes(dbInfo.name))
         .map((dbInfo) => dbInfo.name);
     }
+
+    const backup: any = {
+      databases: {},
+      timestamp: new Date().toISOString(),
+    };
 
     for (const dbName of databasesToBackup) {
       console.log(`Backing up database: ${dbName}`);
@@ -172,7 +172,7 @@ async function createMongoDBBackup(): Promise<void> {
       }
     }
 
-    const backupJson = EJSON.stringify(backup, undefined, 2);
+    const backupJson = EJSON.stringify(backup);
     const writeStream = createWriteStream(tempFilePath);
     const gzipStream = createGzip();
 
